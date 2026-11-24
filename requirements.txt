@@ -1,0 +1,4 @@
+streamlit>=1.40
+pinecone>=5.4
+google-genai>=1.0
+pandas>=2.0
