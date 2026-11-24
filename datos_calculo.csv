@@ -1,0 +1,13 @@
+id,kwh_anio,kwh_ciclo,potencia_w,potencia_calor_w,fuente
+AA-01,514,,1028,1028,Manual Miracle: 514 kWh/año (500 h en frío)
+AA-02,525,,1050,,Manual Midea: 525 kWh/año (500 h)
+AA-03,,,1600,1400,Datos aportados por el grupo (etiqueta Argentina; el manual no indica consumo)
+HE-01,393,,190,,Manual Drean DTP458: 393 kWh/año
+HE-02,337,,,,Manual Drean HDR320: 337 kWh/año
+HE-03,440,,,,Dato aportado por el grupo (440 kWh/año)
+LA-01,118,0.59,2100,,Manual Whirlpool WCS60ZB: 0.59 kWh/ciclo
+LA-02,82,0.41,,,Manual LG: 0.41 kWh/ciclo
+LA-03,,,1900,,Manual Philco: 1900 W; consumo por ciclo no figura
+MI-01,,,1100,,Manual Drean: 1100 W entrada
+MI-02,,,820,,Dato aportado por el grupo (manual indica 1400 W de entrada)
+MI-03,,,1200,,Manual LG: 1200 W
