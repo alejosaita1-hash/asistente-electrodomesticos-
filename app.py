@@ -78,7 +78,17 @@ def preguntar(q):
     hits = r["result"]["hits"]
     ctx = "\n\n".join(f"[Página {h['fields']['pagina']:.0f}]\n{h['fields']['texto']}" for h in hits)
     prompt = f"{SISTEMA}\n\nProducto: {ficha['marca']} {ficha['modelo']}\n\nFRAGMENTOS:\n{ctx}\n\nPREGUNTA: {q}"
-    resp = ia.models.generate_content(model=MODELO, contents=prompt)
+    resp, ultimo = None, None
+    for m in dict.fromkeys([MODELO, "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]):
+        try:
+            resp = ia.models.generate_content(model=m, contents=prompt)
+            break
+        except Exception as e:
+            ultimo = e
+            if "404" not in str(e) and "NOT_FOUND" not in str(e):
+                raise
+    if resp is None:
+        raise ultimo
     pags = sorted({int(h["fields"]["pagina"]) for h in hits})
     return resp.text, pags
 
@@ -102,7 +112,7 @@ with tab1:
         try:
             txt, pags = preguntar(q)
         except Exception as e:
-            txt, pags = f"No pude consultar el manual ahora ({type(e).__name__}). Probá de nuevo.", []
+            txt, pags = f"No pude consultar el manual ahora. Detalle: {str(e)[:400]}", []
         st.session_state.chat.append({"rol": "assistant", "txt": txt, "pags": pags})
         st.rerun()
 
