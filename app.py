@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 from pinecone import Pinecone
 from google import genai
+from google.genai import types
 import motor
 
 st.set_page_config(page_title="Asistente de electrodomésticos", page_icon="⚡", layout="wide")
@@ -60,7 +61,7 @@ with st.sidebar:
 
 st.title(f"{ficha['marca']} {ficha['modelo']}")
 st.caption(f"{cat} · {ficha['tipo']}")
-tab1, tab2 = st.tabs(["💬 Preguntarle al manual", "💰 Calcular consumo y ahorro"])
+tab1, tab2, tab3 = st.tabs(["💬 Preguntarle al manual", "💰 Calcular consumo y ahorro", "⚖️ Comparar productos"])
 
 # ---------- Tab 1: RAG ----------
 SISTEMA = """Sos un asistente de una tienda de electrodomésticos. Respondés SOLO con la información de los
@@ -93,23 +94,33 @@ def modelos_disponibles(ia):
 def preguntar(q):
     idx, ia = clientes()
     r = idx.search(namespace="manuales", query={
-        "top_k": 6, "inputs": {"text": q}, "filter": {"producto_id": {"$eq": pid}}})
+        "top_k": 4, "inputs": {"text": q}, "filter": {"producto_id": {"$eq": pid}}})
     hits = r["result"]["hits"]
     ctx = "\n\n".join(f"[Página {h['fields']['pagina']:.0f}]\n{h['fields']['texto']}" for h in hits)
     prompt = f"{SISTEMA}\n\nProducto: {ficha['marca']} {ficha['modelo']}\n\nFRAGMENTOS:\n{ctx}\n\nPREGUNTA: {q}"
     resp, errores = None, []
-    for intento in range(4):
-        for m in modelos_disponibles(ia):
-            try:
-                resp = ia.models.generate_content(model=m, contents=prompt)
+    rapida = types.GenerateContentConfig(
+        max_output_tokens=700, temperature=0.2,
+        thinking_config=types.ThinkingConfig(thinking_budget=0))
+    simple = types.GenerateContentConfig(max_output_tokens=700, temperature=0.2)
+    for intento in range(2):
+        for m in modelos_disponibles(ia)[:3]:
+            for cfg in (rapida, simple):
+                try:
+                    resp = ia.models.generate_content(model=m, contents=prompt, config=cfg)
+                    break
+                except Exception as e:
+                    errores.append(f"{m}: {str(e)[:90]}")
+                    if "thinking" in str(e).lower() or "INVALID_ARGUMENT" in str(e):
+                        continue  # el modelo no admite apagar el razonamiento: reintenta sin eso
+                    if not any(c in str(e) for c in ("404", "429", "500", "503", "UNAVAILABLE", "NOT_FOUND")):
+                        raise
+                    break
+            if resp is not None:
                 break
-            except Exception as e:
-                errores.append(f"{m}: {str(e)[:90]}")
-                if not any(c in str(e) for c in ("404", "429", "500", "503", "UNAVAILABLE", "NOT_FOUND")):
-                    raise
         if resp is not None:
             break
-        time.sleep(3 * (intento + 1))
+        time.sleep(2)
     if resp is None:
         raise RuntimeError(" | ".join(errores[-4:]))
     pags = sorted({int(h["fields"]["pagina"]) for h in hits})
@@ -133,7 +144,8 @@ with tab1:
     if q:
         st.session_state.chat.append({"rol": "user", "txt": q})
         try:
-            txt, pags = preguntar(q)
+            with st.spinner("Buscando en el manual..."):
+                txt, pags = preguntar(q)
         except Exception as e:
             txt, pags = f"No pude consultar el manual ahora. Detalle: {str(e)[:400]}", []
         st.session_state.chat.append({"rol": "assistant", "txt": txt, "pags": pags})
@@ -203,3 +215,64 @@ with tab2:
         if c != "HE":
             st.write(f"- El ahorro se muestra como rango (±{motor.INCERTIDUMBRE:.0%}) porque el uso real varía.")
         st.caption("Fuente de los datos: " + calc[pid]["fuente"])
+
+
+# ---------- Tab 3: comparar ----------
+with tab3:
+    st.markdown("Compará el producto elegido en la barra lateral con otro **de la misma categoría**, con el mismo hábito de uso.")
+    c = CATS[cat]
+    otros = [f["id"] for f in fichas if f["id"].startswith(c) and f["id"] != pid]
+    pid_b = st.selectbox("Comparar con", otros, key="cmp_b",
+                         format_func=lambda i: f"{por_id[i]['marca']} {por_id[i]['modelo']}")
+    st.caption("Solo se comparan productos de la misma categoría: un aire y un lavarropas no son comparables.")
+    if c == "AA":
+        x1, x2, x3 = st.columns(3)
+        hh = x1.slider("Horas por día", 0.0, 24.0, 8.0, 0.5, key="cmp_h")
+        dd = x2.slider("Días por mes", 1, 31, 30, key="cmp_d")
+        mm = x3.radio("Modo", ["frio", "calor"], horizontal=True, key="cmp_m", format_func=str.capitalize)
+        uso = {"horas_dia": hh, "dias_mes": dd, "modo": mm}
+    elif c == "LA":
+        uso = {"ciclos_semana": st.slider("Lavados por semana", 0, 14, 4, key="cmp_c")}
+    elif c == "MI":
+        x1, x2 = st.columns(2)
+        uso = {"minutos_dia": x1.slider("Minutos por día", 0, 120, 20, key="cmp_mi"),
+               "dias_mes": x2.slider("Días por mes", 1, 31, 30, key="cmp_dm")}
+    else:
+        uso = {}
+        st.info("Las heladeras funcionan todo el año: se compara el consumo anual de etiqueta dividido 12.")
+    p1, p2 = st.columns(2)
+    precio_a = p1.number_input(f"Precio de {por_id[pid]['marca']} {por_id[pid]['modelo']} ($, opcional)", min_value=0.0, value=0.0, step=10000.0, key="pa")
+    precio_b = p2.number_input(f"Precio de {por_id[pid_b]['marca']} {por_id[pid_b]['modelo']} ($, opcional)", min_value=0.0, value=0.0, step=10000.0, key="pb")
+    ra = motor.consumo_mensual(pid, uso, tarifa, calc)
+    rb = motor.consumo_mensual(pid_b, uso, tarifa, calc)
+    ca, cb = st.columns(2)
+    for col, p, r in ((ca, pid, ra), (cb, pid_b, rb)):
+        col.markdown(f"<div class='kpi'><small>{por_id[p]['marca']} {por_id[p]['modelo']}</small>"
+                     f"<h2>{motor.fmt(r.pesos_mes)} / mes</h2><span>{r.kwh_mes:.1f} kWh por mes</span></div>",
+                     unsafe_allow_html=True)
+    dif = ra.pesos_mes - rb.pesos_mes
+    if abs(dif) < 1:
+        st.info("Con este hábito, los dos cuestan lo mismo por mes.")
+    else:
+        barato, caro = (pid_b, pid) if dif > 0 else (pid, pid_b)
+        st.success(f"**{por_id[barato]['marca']} {por_id[barato]['modelo']}** cuesta {motor.fmt(abs(dif))} menos por mes "
+                   f"({motor.fmt(abs(dif) * 12)} por año) que {por_id[caro]['marca']} {por_id[caro]['modelo']}.")
+        pb_, pc_ = (precio_b, precio_a) if dif > 0 else (precio_a, precio_b)
+        if precio_a > 0 and precio_b > 0:
+            extra = pb_ - pc_  # lo que cuesta de más el que gasta menos
+            if extra <= 0:
+                st.write("El que gasta menos energía también es el más barato: conviene en todo sentido.")
+            else:
+                st.write(f"El que gasta menos cuesta {motor.fmt(extra)} más al comprarlo: se recupera en "
+                         f"**{extra / abs(dif):.0f} meses** de uso.")
+        else:
+            st.caption("Cargá los dos precios de catálogo para ver en cuántos meses se recupera la diferencia.")
+    if not (ra.confiable and rb.confiable):
+        st.warning("Alguno de los manuales no informa el consumo por ciclo: la comparación es una estimación poco confiable.")
+    with st.expander("Supuestos de la comparación"):
+        for p, r in ((pid, ra), (pid_b, rb)):
+            st.write(f"**{por_id[p]['marca']} {por_id[p]['modelo']}**: {r.metodo}")
+            for x in r.supuestos:
+                st.write(f"- {x}")
+        st.write(f"- Misma tarifa ({motor.fmt(tarifa)} por kWh) y mismo hábito para los dos.")
+        st.write("- El precio es el que cargás vos; la app no tiene precios de catálogo.")
