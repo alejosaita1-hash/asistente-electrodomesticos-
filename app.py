@@ -103,26 +103,28 @@ def preguntar(q):
         max_output_tokens=700, temperature=0.2,
         thinking_config=types.ThinkingConfig(thinking_budget=0))
     simple = types.GenerateContentConfig(max_output_tokens=700, temperature=0.2)
-    for intento in range(2):
+    for intento in range(2):  # el 2.º intento solo si hubo errores temporales (503), nunca por cuota
         for m in modelos_disponibles(ia)[:3]:
             for cfg in (rapida, simple):
                 try:
                     resp = ia.models.generate_content(model=m, contents=prompt, config=cfg)
                     break
                 except Exception as e:
-                    errores.append(f"{m}: {str(e)[:90]}")
-                    if "thinking" in str(e).lower() or "INVALID_ARGUMENT" in str(e):
+                    errores.append((m, str(e)))
+                    if ("thinking" in str(e).lower() or "INVALID_ARGUMENT" in str(e)) and cfg is rapida:
                         continue  # el modelo no admite apagar el razonamiento: reintenta sin eso
-                    if not any(c in str(e) for c in ("404", "429", "500", "503", "UNAVAILABLE", "NOT_FOUND")):
+                    if not any(c in str(e) for c in ("404", "429", "500", "503", "UNAVAILABLE", "NOT_FOUND", "RESOURCE_EXHAUSTED")):
                         raise
                     break
             if resp is not None:
                 break
         if resp is not None:
             break
+        if all("429" in e or "RESOURCE_EXHAUSTED" in e for _, e in errores):
+            raise RuntimeError("CUOTA")
         time.sleep(2)
     if resp is None:
-        raise RuntimeError(" | ".join(errores[-4:]))
+        raise RuntimeError(" | ".join(f"{m}: {e[:80]}" for m, e in errores[-3:]))
     pags = sorted({int(h["fields"]["pagina"]) for h in hits})
     return resp.text, pags
 
@@ -147,7 +149,9 @@ with tab1:
             with st.spinner("Buscando en el manual..."):
                 txt, pags = preguntar(q)
         except Exception as e:
-            txt, pags = f"No pude consultar el manual ahora. Detalle: {str(e)[:400]}", []
+            txt = ("Se agotó la cuota gratuita de consultas de Gemini. Esperá unos minutos o probá mañana."
+                   if str(e) == "CUOTA" else f"No pude consultar el manual ahora. Detalle: {str(e)[:400]}")
+            pags = []
         st.session_state.chat.append({"rol": "assistant", "txt": txt, "pags": pags})
         st.rerun()
 
