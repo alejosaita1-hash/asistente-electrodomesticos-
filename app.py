@@ -1,4 +1,4 @@
-import os
+import os, time
 import streamlit as st
 import pandas as pd
 from pinecone import Pinecone
@@ -79,14 +79,19 @@ def preguntar(q):
     ctx = "\n\n".join(f"[Página {h['fields']['pagina']:.0f}]\n{h['fields']['texto']}" for h in hits)
     prompt = f"{SISTEMA}\n\nProducto: {ficha['marca']} {ficha['modelo']}\n\nFRAGMENTOS:\n{ctx}\n\nPREGUNTA: {q}"
     resp, ultimo = None, None
-    for m in dict.fromkeys([MODELO, "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]):
-        try:
-            resp = ia.models.generate_content(model=m, contents=prompt)
+    modelos = list(dict.fromkeys([MODELO, "gemini-3.8-flash", "gemini-flash-latest", "gemini-flash-lite-latest"]))
+    for intento in range(3):
+        for m in modelos:
+            try:
+                resp = ia.models.generate_content(model=m, contents=prompt)
+                break
+            except Exception as e:
+                ultimo = e
+                if not any(c in str(e) for c in ("404", "429", "500", "503", "UNAVAILABLE", "NOT_FOUND")):
+                    raise
+        if resp is not None:
             break
-        except Exception as e:
-            ultimo = e
-            if "404" not in str(e) and "NOT_FOUND" not in str(e):
-                raise
+        time.sleep(2 * (intento + 1))
     if resp is None:
         raise ultimo
     pags = sorted({int(h["fields"]["pagina"]) for h in hits})
