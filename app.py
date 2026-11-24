@@ -71,6 +71,25 @@ fragmentos del manual que te paso. Reglas:
 - No hagas cuentas de dinero: para eso existe la pestaña de cálculo."""
 
 
+@st.cache_data(ttl=3600)
+def _listar(_ia):
+    try:
+        out = []
+        for m in _ia.models.list():
+            n = m.name.replace("models/", "")
+            acciones = getattr(m, "supported_actions", None) or []
+            if "flash" in n and "generateContent" in acciones and not any(
+                    x in n for x in ("image", "tts", "live", "audio", "robotics", "computer", "thinking", "exp")):
+                out.append(n)
+        return sorted(out, reverse=True)
+    except Exception:
+        return []
+
+
+def modelos_disponibles(ia):
+    return list(dict.fromkeys([MODELO] + _listar(ia)))
+
+
 def preguntar(q):
     idx, ia = clientes()
     r = idx.search(namespace="manuales", query={
@@ -78,22 +97,21 @@ def preguntar(q):
     hits = r["result"]["hits"]
     ctx = "\n\n".join(f"[Página {h['fields']['pagina']:.0f}]\n{h['fields']['texto']}" for h in hits)
     prompt = f"{SISTEMA}\n\nProducto: {ficha['marca']} {ficha['modelo']}\n\nFRAGMENTOS:\n{ctx}\n\nPREGUNTA: {q}"
-    resp, ultimo = None, None
-    modelos = list(dict.fromkeys([MODELO, "gemini-3.8-flash", "gemini-flash-latest", "gemini-flash-lite-latest"]))
-    for intento in range(3):
-        for m in modelos:
+    resp, errores = None, []
+    for intento in range(4):
+        for m in modelos_disponibles(ia):
             try:
                 resp = ia.models.generate_content(model=m, contents=prompt)
                 break
             except Exception as e:
-                ultimo = e
+                errores.append(f"{m}: {str(e)[:90]}")
                 if not any(c in str(e) for c in ("404", "429", "500", "503", "UNAVAILABLE", "NOT_FOUND")):
                     raise
         if resp is not None:
             break
-        time.sleep(2 * (intento + 1))
+        time.sleep(3 * (intento + 1))
     if resp is None:
-        raise ultimo
+        raise RuntimeError(" | ".join(errores[-4:]))
     pags = sorted({int(h["fields"]["pagina"]) for h in hits})
     return resp.text, pags
 
